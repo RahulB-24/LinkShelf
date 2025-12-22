@@ -7,14 +7,14 @@ import Input from '../ui/Input';
 import Button from '../ui/Button';
 import { Loader2 } from 'lucide-react';
 import { Collection, Tag } from '../../types';
-import { 
-  getCollections, 
-  getTags, 
-  createBookmark, 
-  createCollection, 
-  updateCollection, 
+import {
+  getCollections,
+  getTags,
+  createBookmark,
+  createCollection,
+  updateCollection,
   deleteCollection,
-  fetchUrlMetadata 
+  fetchUrlMetadata
 } from '../../services/bookmarkService';
 
 const AppLayout: React.FC = () => {
@@ -22,17 +22,17 @@ const AppLayout: React.FC = () => {
   const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(false);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
-  
+
   // Modal States
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isCollectionModalOpen, setIsCollectionModalOpen] = useState(false);
   const [isDeleteCollectionModalOpen, setIsDeleteCollectionModalOpen] = useState(false);
-  
-  // Add Link State
+
   const [newLinkUrl, setNewLinkUrl] = useState('');
   const [newLinkTitle, setNewLinkTitle] = useState('');
   const [newLinkDesc, setNewLinkDesc] = useState('');
   const [newLinkTags, setNewLinkTags] = useState('');
+  const [newLinkFavicon, setNewLinkFavicon] = useState('');
   const [selectedCollection, setSelectedCollection] = useState('');
   const [isSavingLink, setIsSavingLink] = useState(false);
   const [isFetchingMetadata, setIsFetchingMetadata] = useState(false);
@@ -66,16 +66,18 @@ const AppLayout: React.FC = () => {
         setIsFetchingMetadata(true);
         try {
           const metadata = await fetchUrlMetadata(newLinkUrl);
-          
-          // Only auto-fill if the user hasn't manually entered data yet
+
           if (!newLinkTitle && metadata.title) {
             setNewLinkTitle(metadata.title);
           }
           if (!newLinkDesc && metadata.description) {
             setNewLinkDesc(metadata.description);
           }
+          if (metadata.favicon) {
+            setNewLinkFavicon(metadata.favicon);
+          }
         } catch (error) {
-           console.error("Scraping failed", error);
+          console.error("Scraping failed", error);
         } finally {
           setIsFetchingMetadata(false);
         }
@@ -87,22 +89,32 @@ const AppLayout: React.FC = () => {
 
 
   // --- Link Actions ---
+  const [addLinkError, setAddLinkError] = useState('');
+
   const handleAddLink = async () => {
     if (!newLinkUrl) return;
     setIsSavingLink(true);
+    setAddLinkError('');
     try {
       await createBookmark({
         url: newLinkUrl,
         title: newLinkTitle || newLinkUrl,
         description: newLinkDesc,
         tags: newLinkTags.split(',').map(t => t.trim()).filter(Boolean),
-        collectionId: selectedCollection
+        collectionId: selectedCollection,
+        faviconUrl: newLinkFavicon
       });
       setIsAddModalOpen(false);
       resetLinkForm();
-      window.location.reload(); // Simple refresh for this demo
-    } catch (error) {
-      console.error(error);
+      window.location.reload();
+    } catch (error: any) {
+      // Handle duplicate URL error
+      if (error.response?.status === 409) {
+        const existing = error.response.data.existing;
+        setAddLinkError(`This URL was already saved on ${new Date(existing.created_at).toLocaleDateString()}`);
+      } else {
+        setAddLinkError(error.response?.data?.error || 'Failed to save bookmark');
+      }
     } finally {
       setIsSavingLink(false);
     }
@@ -113,23 +125,24 @@ const AppLayout: React.FC = () => {
     setNewLinkTitle('');
     setNewLinkDesc('');
     setNewLinkTags('');
+    setNewLinkFavicon('');
     setSelectedCollection('');
   };
 
   // --- Collection Actions ---
   const handleSaveCollection = async () => {
-    if(!newCollectionName) return;
+    if (!newCollectionName) return;
     setIsSavingCollection(true);
     try {
       if (editingCollection) {
-         // Update existing
-         const updated = await updateCollection(editingCollection.id, newCollectionName);
-         setCollections(prev => prev.map(c => c.id === updated.id ? updated : c));
+        // Update existing
+        const updated = await updateCollection(editingCollection.id, newCollectionName);
+        setCollections(prev => prev.map(c => c.id === updated.id ? updated : c));
       } else {
-         // Create new
-         const newCol = await createCollection(newCollectionName);
-         setCollections(prev => [...prev, newCol]);
-         if(isAddModalOpen) setSelectedCollection(newCol.id);
+        // Create new
+        const newCol = await createCollection(newCollectionName);
+        setCollections(prev => [...prev, newCol]);
+        if (isAddModalOpen) setSelectedCollection(newCol.id);
       }
       setIsCollectionModalOpen(false);
       resetCollectionForm();
@@ -141,17 +154,17 @@ const AppLayout: React.FC = () => {
   };
 
   const handleDeleteCollectionConfirm = async () => {
-    if(!editingCollection) return;
+    if (!editingCollection) return;
     setIsSavingCollection(true);
     try {
-       await deleteCollection(editingCollection.id);
-       setCollections(prev => prev.filter(c => c.id !== editingCollection.id));
-       setIsDeleteCollectionModalOpen(false);
-       setEditingCollection(null);
+      await deleteCollection(editingCollection.id);
+      setCollections(prev => prev.filter(c => c.id !== editingCollection.id));
+      setIsDeleteCollectionModalOpen(false);
+      setEditingCollection(null);
     } catch (error) {
-       console.error(error);
+      console.error(error);
     } finally {
-       setIsSavingCollection(false);
+      setIsSavingCollection(false);
     }
   };
 
@@ -173,24 +186,24 @@ const AppLayout: React.FC = () => {
   };
 
   const resetCollectionForm = () => {
-     setNewCollectionName('');
-     setEditingCollection(null);
+    setNewCollectionName('');
+    setEditingCollection(null);
   };
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 overflow-hidden font-sans transition-colors duration-200">
-      
+
       {/* Top Bar - Full Width, Fixed Top */}
-      <TopBar 
-        onMobileMenuClick={() => setMobileSidebarOpen(true)} 
+      <TopBar
+        onMobileMenuClick={() => setMobileSidebarOpen(true)}
         onAddClick={() => setIsAddModalOpen(true)}
       />
 
       {/* Main Container below TopBar */}
       <div className="flex flex-1 overflow-hidden">
-        
+
         {/* Sidebar - collapsible on desktop */}
-        <Sidebar 
+        <Sidebar
           isMobileOpen={mobileSidebarOpen}
           isCollapsed={desktopSidebarCollapsed}
           onToggleCollapse={() => setDesktopSidebarCollapsed(!desktopSidebarCollapsed)}
@@ -204,7 +217,7 @@ const AppLayout: React.FC = () => {
 
         {/* Content Area */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 relative">
-           <Outlet context={{ collections }} />
+          <Outlet context={{ collections, refreshCollections: fetchGlobalData }} />
         </main>
       </div>
 
@@ -225,6 +238,13 @@ const AppLayout: React.FC = () => {
         }
       >
         <div className="space-y-4">
+          {/* Error Message */}
+          {addLinkError && (
+            <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md">
+              <p className="text-sm text-red-600 dark:text-red-400">{addLinkError}</p>
+            </div>
+          )}
+
           <div className="relative">
             <Input
               label="URL"
@@ -240,7 +260,7 @@ const AppLayout: React.FC = () => {
               </div>
             )}
           </div>
-          
+
           <Input
             label="Title"
             placeholder="Page title"
@@ -256,29 +276,29 @@ const AppLayout: React.FC = () => {
               onChange={(e) => setNewLinkDesc(e.target.value)}
             />
           </div>
-          
+
           <div className="space-y-1">
-             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Collection</label>
-             <div className="flex space-x-2">
-               <select
-                 className="block w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent transition-colors"
-                 value={selectedCollection}
-                 onChange={(e) => setSelectedCollection(e.target.value)}
-               >
-                 <option value="">Unorganized</option>
-                 {collections.map(c => (
-                   <option key={c.id} value={c.id}>{c.name}</option>
-                 ))}
-               </select>
-               <Button 
-                  type="button" 
-                  variant="secondary" 
-                  onClick={openCreateCollectionModal}
-                  title="Create new collection"
-               >
-                 +
-               </Button>
-             </div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Collection</label>
+            <div className="flex space-x-2">
+              <select
+                className="block w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent transition-colors"
+                value={selectedCollection}
+                onChange={(e) => setSelectedCollection(e.target.value)}
+              >
+                <option value="">Unorganized</option>
+                {collections.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={openCreateCollectionModal}
+                title="Create new collection"
+              >
+                +
+              </Button>
+            </div>
           </div>
 
           <Input
@@ -296,22 +316,22 @@ const AppLayout: React.FC = () => {
         onClose={() => { setIsCollectionModalOpen(false); resetCollectionForm(); }}
         title={editingCollection ? "Edit Collection" : "Create Collection"}
         footer={
-           <>
+          <>
             <Button variant="ghost" onClick={() => { setIsCollectionModalOpen(false); resetCollectionForm(); }}>Cancel</Button>
             <Button onClick={handleSaveCollection} isLoading={isSavingCollection}>
               {editingCollection ? "Save Changes" : "Create"}
             </Button>
-           </>
+          </>
         }
       >
         <div className="space-y-4">
-           <Input 
-             label="Collection Name"
-             placeholder="e.g. Project Resources"
-             value={newCollectionName}
-             onChange={(e) => setNewCollectionName(e.target.value)}
-             autoFocus
-           />
+          <Input
+            label="Collection Name"
+            placeholder="e.g. Project Resources"
+            value={newCollectionName}
+            onChange={(e) => setNewCollectionName(e.target.value)}
+            autoFocus
+          />
         </div>
       </Modal>
 
@@ -328,7 +348,7 @@ const AppLayout: React.FC = () => {
         }
       >
         <div className="text-gray-600 dark:text-gray-400">
-          Are you sure you want to delete <strong>{editingCollection?.name}</strong>? 
+          Are you sure you want to delete <strong>{editingCollection?.name}</strong>?
           Bookmarks inside this collection will NOT be deleted, but will become unorganized.
         </div>
       </Modal>

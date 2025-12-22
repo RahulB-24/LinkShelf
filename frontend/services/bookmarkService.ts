@@ -5,13 +5,48 @@ import { Bookmark, Collection, Tag } from '../types';
 // Helper to simulate delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-export const getBookmarks = async (): Promise<Bookmark[]> => {
+// Transform backend snake_case to frontend camelCase
+const transformBookmark = (b: any): Bookmark => ({
+  id: String(b.id),
+  title: b.title,
+  url: b.url,
+  description: b.description || '',
+  notes: b.notes || '',
+  collectionId: b.collection_id ? String(b.collection_id) : undefined,
+  tags: b.tags || [],
+  faviconUrl: b.favicon_url || '',
+  createdAt: b.created_at,
+  visitCount: b.visit_count || 0,
+  lastVisited: b.last_visited_at
+});
+
+const transformCollection = (c: any): Collection => ({
+  id: String(c.id),
+  name: c.name,
+  slug: c.slug || c.name.toLowerCase().replace(/\s+/g, '-'),
+  count: parseInt(c.count) || 0
+});
+
+const transformTag = (t: any): Tag => ({
+  id: String(t.id),
+  name: t.name,
+  count: parseInt(t.count) || 0
+});
+
+export const getBookmarks = async (params?: { search?: string; collection?: string; tags?: string[] }): Promise<Bookmark[]> => {
   if (USE_MOCK_DATA) {
     await delay(600);
-    return [...MOCK_BOOKMARKS]; // Return copy to allow mutation in mock mode
+    return [...MOCK_BOOKMARKS];
   }
-  const response = await api.get('/bookmarks');
-  return response.data;
+  const queryParams = new URLSearchParams();
+  if (params?.search) queryParams.append('search', params.search);
+  if (params?.collection) queryParams.append('collection', params.collection);
+  if (params?.tags) params.tags.forEach(t => queryParams.append('tags', t));
+
+  const url = queryParams.toString() ? `/bookmarks?${queryParams}` : '/bookmarks';
+  const response = await api.get(url);
+  const bookmarks = response.data.bookmarks || response.data;
+  return bookmarks.map(transformBookmark);
 };
 
 export const createBookmark = async (bookmark: Partial<Bookmark>): Promise<Bookmark> => {
@@ -27,8 +62,16 @@ export const createBookmark = async (bookmark: Partial<Bookmark>): Promise<Bookm
     MOCK_BOOKMARKS.push(newBookmark);
     return newBookmark;
   }
-  const response = await api.post('/bookmarks', bookmark);
-  return response.data;
+  const response = await api.post('/bookmarks', {
+    url: bookmark.url,
+    title: bookmark.title,
+    description: bookmark.description,
+    notes: bookmark.notes,
+    collectionId: bookmark.collectionId ? parseInt(bookmark.collectionId) : null,
+    tags: bookmark.tags || [],
+    faviconUrl: bookmark.faviconUrl
+  });
+  return transformBookmark(response.data);
 };
 
 export const updateBookmark = async (id: string, updates: Partial<Bookmark>): Promise<Bookmark> => {
@@ -41,8 +84,14 @@ export const updateBookmark = async (id: string, updates: Partial<Bookmark>): Pr
     }
     throw new Error('Bookmark not found');
   }
-  const response = await api.put(`/bookmarks/${id}`, updates);
-  return response.data;
+  const response = await api.put(`/bookmarks/${id}`, {
+    title: updates.title,
+    description: updates.description,
+    notes: updates.notes,
+    collectionId: updates.collectionId ? parseInt(updates.collectionId) : null,
+    tags: updates.tags || []
+  });
+  return transformBookmark(response.data);
 };
 
 export const deleteBookmark = async (id: string): Promise<void> => {
@@ -57,13 +106,25 @@ export const deleteBookmark = async (id: string): Promise<void> => {
   await api.delete(`/bookmarks/${id}`);
 };
 
+// Track a visit to a bookmark (increments visit_count)
+export const trackVisit = async (id: string): Promise<void> => {
+  if (USE_MOCK_DATA) {
+    const index = MOCK_BOOKMARKS.findIndex(b => b.id === id);
+    if (index !== -1) {
+      MOCK_BOOKMARKS[index].visitCount += 1;
+    }
+    return;
+  }
+  await api.post(`/bookmarks/${id}/visit`);
+};
+
 export const getCollections = async (): Promise<Collection[]> => {
   if (USE_MOCK_DATA) {
     await delay(300);
     return MOCK_COLLECTIONS;
   }
   const response = await api.get('/collections');
-  return response.data;
+  return response.data.map(transformCollection);
 };
 
 export const createCollection = async (name: string): Promise<Collection> => {
@@ -79,7 +140,7 @@ export const createCollection = async (name: string): Promise<Collection> => {
     return newCollection;
   }
   const response = await api.post('/collections', { name });
-  return response.data;
+  return transformCollection(response.data);
 };
 
 export const updateCollection = async (id: string, name: string): Promise<Collection> => {
@@ -87,17 +148,17 @@ export const updateCollection = async (id: string, name: string): Promise<Collec
     await delay(500);
     const index = MOCK_COLLECTIONS.findIndex(c => c.id === id);
     if (index !== -1) {
-      MOCK_COLLECTIONS[index] = { 
-        ...MOCK_COLLECTIONS[index], 
+      MOCK_COLLECTIONS[index] = {
+        ...MOCK_COLLECTIONS[index],
         name,
-        slug: name.toLowerCase().replace(/\s+/g, '-') 
+        slug: name.toLowerCase().replace(/\s+/g, '-')
       };
       return MOCK_COLLECTIONS[index];
     }
     throw new Error('Collection not found');
   }
   const response = await api.put(`/collections/${id}`, { name });
-  return response.data;
+  return transformCollection(response.data);
 };
 
 export const deleteCollection = async (id: string): Promise<void> => {
@@ -118,14 +179,12 @@ export const getTags = async (): Promise<Tag[]> => {
     return MOCK_TAGS;
   }
   const response = await api.get('/tags');
-  return response.data;
+  return response.data.map(transformTag);
 };
 
-export const fetchUrlMetadata = async (url: string): Promise<{ title: string; description: string; faviconUrl?: string }> => {
-  // Simulate backend scraping
-  await delay(1500); // 1.5s delay to simulate network request
-  
+export const fetchUrlMetadata = async (url: string): Promise<{ title: string; description: string; favicon?: string }> => {
   if (USE_MOCK_DATA) {
+    await delay(1500);
     let hostname = '';
     try {
       hostname = new URL(url).hostname;
@@ -135,11 +194,11 @@ export const fetchUrlMetadata = async (url: string): Promise<{ title: string; de
 
     return {
       title: `${hostname.charAt(0).toUpperCase() + hostname.slice(1)} - Official Site`,
-      description: `This is an auto-generated description for ${url} fetched by the scraping service. It provides a summary of the webpage content.`,
-      faviconUrl: `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`
+      description: `This is an auto-generated description for ${url} fetched by the scraping service.`,
+      favicon: `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`
     };
   }
-  
-  const response = await api.post('/scrape', { url });
+
+  const response = await api.post('/bookmarks/scrape', { url });
   return response.data;
 };

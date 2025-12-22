@@ -1,9 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, AuthState } from '../types';
-import { MOCK_USER, USE_MOCK_DATA } from '../constants';
+import api from '../services/api';
 
 interface AuthContextType extends AuthState {
-  login: (email: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
+  signup: (email: string, password: string, name?: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -18,10 +19,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
 
   useEffect(() => {
-    // Check for existing token
+    // Check for existing token and verify it
     const token = localStorage.getItem('token');
     const userStr = localStorage.getItem('user');
-    
+
     if (token && userStr) {
       try {
         const user = JSON.parse(userStr);
@@ -41,26 +42,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
-  const login = async (email: string) => {
-    // Simulate API call
-    if (USE_MOCK_DATA) {
-      await new Promise(resolve => setTimeout(resolve, 800));
-      const user = { ...MOCK_USER, email };
-      const token = 'mock-jwt-token';
-      
-      localStorage.setItem('token', token);
-      localStorage.setItem('user', JSON.stringify(user));
-      
-      setState({
-        user,
-        token,
-        isAuthenticated: true,
-        isLoading: false,
-      });
-    } else {
-        // Real implementation would go here
-        console.error("Real auth not implemented in this demo");
-    }
+  const login = async (email: string, password: string) => {
+    const response = await api.post('/auth/login', { email, password });
+    const { user, token } = response.data;
+
+    localStorage.setItem('token', token);
+    localStorage.setItem('user', JSON.stringify(user));
+
+    setState({
+      user,
+      token,
+      isAuthenticated: true,
+      isLoading: false,
+    });
+  };
+
+  const signup = async (email: string, password: string, name?: string) => {
+    const response = await api.post('/auth/signup', { email, password, name });
+    const { user, token } = response.data;
+
+    localStorage.setItem('token', token);
+    localStorage.setItem('user', JSON.stringify(user));
+
+    setState({
+      user,
+      token,
+      isAuthenticated: true,
+      isLoading: false,
+    });
   };
 
   const logout = () => {
@@ -75,7 +84,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ ...state, login, logout }}>
+    <AuthContext.Provider value={{ ...state, login, signup, logout }}>
       {children}
     </AuthContext.Provider>
   );

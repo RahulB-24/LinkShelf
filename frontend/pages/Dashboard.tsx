@@ -1,13 +1,13 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence, Variants } from 'framer-motion';
-import { useOutletContext } from 'react-router-dom';
-import { getBookmarks, updateBookmark, deleteBookmark } from '../services/bookmarkService';
+import { useOutletContext, useParams, useSearchParams } from 'react-router-dom';
+import { getBookmarks, updateBookmark, deleteBookmark, createCollection, trackVisit } from '../services/bookmarkService';
 import { Bookmark, Collection } from '../types';
 import BookmarkCard from '../components/bookmarks/BookmarkCard';
 import Modal from '../components/ui/Modal';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
-import { ArrowUpDown, ExternalLink, Calendar, Tag as TagIcon, LayoutGrid, List, Book } from 'lucide-react';
+import { ArrowUpDown, ExternalLink, Calendar, Tag as TagIcon, LayoutGrid, List, Book, Plus, X, CheckSquare, Trash2, FolderInput } from 'lucide-react';
 
 type SortOption = 'date-desc' | 'date-asc' | 'alpha-asc' | 'alpha-desc' | 'tag';
 type ViewMode = 'grid' | 'list';
@@ -17,13 +17,18 @@ const Dashboard: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [sortBy, setSortBy] = useState<SortOption>('date-desc');
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
-  
+
+  // URL params for filtering
+  const { slug: collectionSlug, name: tagName } = useParams();
+  const [searchParams] = useSearchParams();
+  const searchQuery = searchParams.get('search') || '';
+
   // Modal States
   const [selectedBookmark, setSelectedBookmark] = useState<Bookmark | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
-  
+
   // Edit Form State
   const [editForm, setEditForm] = useState({
     title: '',
@@ -34,25 +39,56 @@ const Dashboard: React.FC = () => {
     notes: ''
   });
   const [isSaving, setIsSaving] = useState(false);
+  const [showNewCollectionInput, setShowNewCollectionInput] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState('');
+  const [isCreatingCollection, setIsCreatingCollection] = useState(false);
+
+  // Batch Select State
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBatchMoveModalOpen, setIsBatchMoveModalOpen] = useState(false);
+  const [batchMoveCollectionId, setBatchMoveCollectionId] = useState('');
 
   // Context from AppLayout for Collections
-  const { collections } = useOutletContext<{ collections: Collection[] }>();
+  const { collections, refreshCollections } = useOutletContext<{
+    collections: Collection[];
+    refreshCollections: () => void;
+  }>();
 
-  // Fetch Data
-  useEffect(() => {
-    loadBookmarks();
-  }, []);
+  // Get active filter info for display
+  const activeFilter = useMemo(() => {
+    if (searchQuery) return { type: 'search', value: searchQuery };
+    if (collectionSlug) {
+      const col = collections.find(c => c.slug === collectionSlug);
+      return { type: 'collection', value: col?.name || collectionSlug, id: col?.id };
+    }
+    if (tagName) return { type: 'tag', value: tagName };
+    return null;
+  }, [searchQuery, collectionSlug, tagName, collections]);
 
-  const loadBookmarks = async () => {
+  // Fetch Data with filters
+  const loadBookmarks = useCallback(async () => {
+    setIsLoading(true);
     try {
-      const data = await getBookmarks();
+      const params: any = {};
+      if (searchQuery) params.search = searchQuery;
+      if (activeFilter?.type === 'collection' && activeFilter.id) {
+        params.collection = activeFilter.id;
+      }
+      if (tagName) params.tags = [tagName];
+
+      const data = await getBookmarks(params);
       setBookmarks(data);
     } catch (error) {
       console.error('Failed to load bookmarks', error);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [searchQuery, activeFilter, tagName]);
+
+  useEffect(() => {
+    loadBookmarks();
+  }, [loadBookmarks]);
 
   // Sorting Logic
   const sortedBookmarks = useMemo(() => {
@@ -93,12 +129,30 @@ const Dashboard: React.FC = () => {
       collectionId: bookmark.collectionId || '',
       notes: bookmark.notes || ''
     });
+    setShowNewCollectionInput(false);
+    setNewCollectionName('');
     setIsEditModalOpen(true);
   };
 
   const handleDeleteClick = (bookmark: Bookmark) => {
     setSelectedBookmark(bookmark);
     setIsDeleteModalOpen(true);
+  };
+
+  const handleCreateNewCollection = async () => {
+    if (!newCollectionName.trim()) return;
+    setIsCreatingCollection(true);
+    try {
+      const newCol = await createCollection(newCollectionName.trim());
+      setEditForm({ ...editForm, collectionId: newCol.id });
+      setShowNewCollectionInput(false);
+      setNewCollectionName('');
+      refreshCollections?.();
+    } catch (error) {
+      console.error('Failed to create collection', error);
+    } finally {
+      setIsCreatingCollection(false);
+    }
   };
 
   const handleSaveEdit = async () => {
@@ -112,10 +166,13 @@ const Dashboard: React.FC = () => {
         collectionId: editForm.collectionId,
         notes: editForm.notes
       });
-      
+
       setBookmarks(prev => prev.map(b => b.id === updated.id ? updated : b));
       setIsEditModalOpen(false);
-      
+
+      // Refresh collection counts if collection was changed
+      refreshCollections?.();
+
       // Update Detail Modal if open and same bookmark
       if (isDetailModalOpen && selectedBookmark.id === updated.id) {
         setSelectedBookmark(updated);
@@ -134,9 +191,77 @@ const Dashboard: React.FC = () => {
       await deleteBookmark(selectedBookmark.id);
       setBookmarks(prev => prev.filter(b => b.id !== selectedBookmark.id));
       setIsDeleteModalOpen(false);
-      setIsDetailModalOpen(false); // Close detail view if open
+      setIsDetailModalOpen(false);
+
+      // Refresh collection counts
+      refreshCollections?.();
     } catch (error) {
       console.error('Failed to delete', error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Batch Select Handlers
+  const toggleSelectMode = () => {
+    setIsSelectMode(!isSelectMode);
+    setSelectedIds(new Set());
+  };
+
+  const toggleSelect = (id: string) => {
+    const newSelection = new Set(selectedIds);
+    if (newSelection.has(id)) {
+      newSelection.delete(id);
+    } else {
+      newSelection.add(id);
+    }
+    setSelectedIds(newSelection);
+  };
+
+  const selectAll = () => {
+    if (selectedIds.size === bookmarks.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(bookmarks.map(b => b.id)));
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.size === 0) return;
+    setIsSaving(true);
+    try {
+      for (const id of selectedIds) {
+        await deleteBookmark(id);
+      }
+      setBookmarks(prev => prev.filter(b => !selectedIds.has(b.id)));
+      setSelectedIds(new Set());
+      setIsSelectMode(false);
+      refreshCollections?.();
+    } catch (error) {
+      console.error('Batch delete failed', error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleBatchMove = async () => {
+    if (selectedIds.size === 0 || !batchMoveCollectionId) return;
+    setIsSaving(true);
+    try {
+      for (const id of selectedIds) {
+        await updateBookmark(id, { collectionId: batchMoveCollectionId });
+      }
+      // Update local state
+      setBookmarks(prev => prev.map(b =>
+        selectedIds.has(b.id) ? { ...b, collectionId: batchMoveCollectionId } : b
+      ));
+      setSelectedIds(new Set());
+      setIsSelectMode(false);
+      setIsBatchMoveModalOpen(false);
+      setBatchMoveCollectionId('');
+      refreshCollections?.();
+    } catch (error) {
+      console.error('Batch move failed', error);
     } finally {
       setIsSaving(false);
     }
@@ -147,21 +272,16 @@ const Dashboard: React.FC = () => {
     hidden: { opacity: 0 },
     visible: {
       opacity: 1,
-      transition: {
-        staggerChildren: 0.05
-      }
+      transition: { staggerChildren: 0.05 }
     }
   };
 
   const itemVariants: Variants = {
     hidden: { opacity: 0, y: 15 },
-    visible: { 
-      opacity: 1, 
+    visible: {
+      opacity: 1,
       y: 0,
-      transition: {
-        duration: 0.3,
-        ease: "easeOut"
-      }
+      transition: { duration: 0.3, ease: "easeOut" }
     },
     exit: {
       opacity: 0,
@@ -170,47 +290,61 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // Renderers
+  // Get page title based on filter
+  const getPageTitle = () => {
+    if (activeFilter?.type === 'search') return `Search: "${activeFilter.value}"`;
+    if (activeFilter?.type === 'collection') return activeFilter.value;
+    if (activeFilter?.type === 'tag') return `#${activeFilter.value}`;
+    return 'All Bookmarks';
+  };
+
   if (isLoading) {
     return (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {[1, 2, 3, 4, 5, 6].map((i) => (
-            <div key={i} className="h-40 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse border border-gray-200 dark:border-gray-700" />
-          ))}
+        {[1, 2, 3, 4, 5, 6].map((i) => (
+          <div key={i} className="h-40 bg-gray-100 dark:bg-gray-800 rounded-xl animate-pulse border border-gray-200 dark:border-gray-700" />
+        ))}
       </div>
     );
   }
 
+  // Key for triggering page transitions
+  const pageKey = `${collectionSlug || 'all'}-${tagName || ''}-${searchQuery || ''}`;
+
   return (
-    <div className="space-y-6 pb-20">
+    <motion.div
+      key={pageKey}
+      className="space-y-6 pb-20"
+      initial={{ opacity: 0, x: 20 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.25, ease: "easeOut" }}
+    >
       {/* Toolbar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-100 dark:border-gray-800 pb-4">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-          All Bookmarks 
+          {getPageTitle()}
           <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">{bookmarks.length} items</span>
         </h2>
-        
+
         <div className="flex items-center space-x-3">
           {/* View Toggles */}
           <div className="flex bg-gray-100 dark:bg-gray-800 p-0.5 rounded-md border border-gray-200 dark:border-gray-700 mr-2">
             <button
               onClick={() => setViewMode('grid')}
-              className={`p-1.5 rounded transition-colors ${
-                viewMode === 'grid' 
-                  ? 'bg-white dark:bg-accent-600 shadow-sm text-accent-600 dark:text-white' 
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-              }`}
+              className={`p-1.5 rounded transition-colors ${viewMode === 'grid'
+                ? 'bg-white dark:bg-accent-600 shadow-sm text-accent-600 dark:text-white'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                }`}
               title="Grid View"
             >
               <LayoutGrid className="w-4 h-4" />
             </button>
             <button
               onClick={() => setViewMode('list')}
-              className={`p-1.5 rounded transition-colors ${
-                viewMode === 'list' 
-                  ? 'bg-white dark:bg-accent-600 shadow-sm text-accent-600 dark:text-white' 
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-              }`}
+              className={`p-1.5 rounded transition-colors ${viewMode === 'list'
+                ? 'bg-white dark:bg-accent-600 shadow-sm text-accent-600 dark:text-white'
+                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
+                }`}
               title="List View"
             >
               <List className="w-4 h-4" />
@@ -231,8 +365,58 @@ const Dashboard: React.FC = () => {
             </select>
             <ArrowUpDown className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
           </div>
+
+          {/* Select Mode Toggle */}
+          <button
+            onClick={toggleSelectMode}
+            className={`p-2 rounded-md border transition-colors ${isSelectMode
+              ? 'bg-accent-50 dark:bg-accent-900/30 border-accent-300 dark:border-accent-600 text-accent-600 dark:text-accent-400'
+              : 'bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600'
+              }`}
+            title={isSelectMode ? 'Cancel selection' : 'Select multiple'}
+          >
+            <CheckSquare className="w-4 h-4" />
+          </button>
         </div>
       </div>
+
+      {/* Batch Action Bar - shown when in select mode */}
+      {isSelectMode && (
+        <div className="flex items-center justify-between p-3 bg-accent-50 dark:bg-accent-900/20 rounded-lg border border-accent-200 dark:border-accent-800">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={selectAll}
+              className="text-sm text-accent-600 dark:text-accent-400 hover:underline"
+            >
+              {selectedIds.size === bookmarks.length ? 'Deselect All' : 'Select All'}
+            </button>
+            <span className="text-sm text-gray-600 dark:text-gray-400">
+              {selectedIds.size} selected
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              leftIcon={<FolderInput className="w-4 h-4" />}
+              onClick={() => setIsBatchMoveModalOpen(true)}
+              disabled={selectedIds.size === 0}
+            >
+              Move
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              leftIcon={<Trash2 className="w-4 h-4" />}
+              onClick={handleBatchDelete}
+              disabled={selectedIds.size === 0}
+              isLoading={isSaving}
+            >
+              Delete
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Content */}
       {bookmarks.length === 0 ? (
@@ -240,37 +424,47 @@ const Dashboard: React.FC = () => {
           <div className="w-16 h-16 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center mb-4 border border-gray-200 dark:border-gray-700">
             <span className="text-2xl">🔖</span>
           </div>
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">No bookmarks yet</h2>
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">
+            {activeFilter ? 'No matching bookmarks' : 'No bookmarks yet'}
+          </h2>
           <p className="text-gray-500 dark:text-gray-400 max-w-sm mb-6">
-            Start building your library by clicking the Add Link button.
+            {activeFilter ? 'Try a different search or filter.' : 'Start building your library by clicking the Add Link button.'}
           </p>
         </div>
       ) : (
-        <motion.div 
-          key={viewMode + sortBy} // Forces remount animation on view/sort change
+        <motion.div
+          key={viewMode + sortBy}
           variants={containerVariants}
           initial="hidden"
           animate="visible"
-          className={viewMode === 'grid' 
+          className={viewMode === 'grid'
             ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"
             : "flex flex-col space-y-3"
           }
         >
           <AnimatePresence mode="popLayout">
             {sortedBookmarks.map((bookmark) => (
-              <motion.div 
-                key={bookmark.id} 
-                variants={itemVariants} 
-                layout={false} // Explicitly disable layout animation to prevent morphing
+              <motion.div
+                key={bookmark.id}
+                variants={itemVariants}
+                layout={false}
                 className={viewMode === 'list' ? 'w-full' : 'h-full'}
               >
-                <BookmarkCard 
-                  bookmark={bookmark} 
+                <BookmarkCard
+                  bookmark={bookmark}
                   viewMode={viewMode}
                   onViewDetail={handleViewDetail}
                   onEdit={handleEditClick}
-                  onAddToCollection={handleEditClick} 
+                  onAddToCollection={handleEditClick}
                   onDelete={handleDeleteClick}
+                  onVisit={(b) => {
+                    setBookmarks(prev => prev.map(bk =>
+                      bk.id === b.id ? { ...bk, visitCount: bk.visitCount + 1 } : bk
+                    ));
+                  }}
+                  isSelectMode={isSelectMode}
+                  isSelected={selectedIds.has(bookmark.id)}
+                  onSelect={toggleSelect}
                 />
               </motion.div>
             ))}
@@ -293,12 +487,15 @@ const Dashboard: React.FC = () => {
             </Button>
             <div className="flex space-x-3">
               <Button variant="secondary" onClick={() => {
-                 setIsDetailModalOpen(false);
-                 handleEditClick(selectedBookmark!);
+                setIsDetailModalOpen(false);
+                handleEditClick(selectedBookmark!);
               }}>
                 Edit
               </Button>
-              <Button onClick={() => window.open(selectedBookmark?.url, '_blank')} leftIcon={<ExternalLink className="w-4 h-4" />}>
+              <Button onClick={() => {
+                trackVisit(selectedBookmark!.id);
+                window.open(selectedBookmark?.url, '_blank');
+              }} leftIcon={<ExternalLink className="w-4 h-4" />}>
                 Open Website
               </Button>
             </div>
@@ -307,51 +504,51 @@ const Dashboard: React.FC = () => {
       >
         {selectedBookmark && (
           <div className="space-y-6">
-             <div>
-               <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-1">{selectedBookmark.title}</h3>
-               <a href={selectedBookmark.url} target="_blank" rel="noopener noreferrer" className="text-sm text-accent-600 dark:text-accent-400 hover:underline break-all block">
-                 {selectedBookmark.url}
-               </a>
-             </div>
-             
-             {selectedBookmark.description && (
-               <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-100 dark:border-gray-700">
-                 <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">{selectedBookmark.description}</p>
-               </div>
-             )}
+            <div>
+              <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-1">{selectedBookmark.title}</h3>
+              <a href={selectedBookmark.url} target="_blank" rel="noopener noreferrer" className="text-sm text-accent-600 dark:text-accent-400 hover:underline break-all block">
+                {selectedBookmark.url}
+              </a>
+            </div>
 
-             {selectedBookmark.notes && (
-               <div>
-                  <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Notes</h4>
-                  <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">{selectedBookmark.notes}</p>
-               </div>
-             )}
+            {selectedBookmark.description && (
+              <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-100 dark:border-gray-700">
+                <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">{selectedBookmark.description}</p>
+              </div>
+            )}
 
-             <div className="flex flex-wrap gap-4 pt-2">
+            {selectedBookmark.notes && (
+              <div>
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Notes</h4>
+                <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap">{selectedBookmark.notes}</p>
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-4 pt-2">
+              <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
+                <Calendar className="w-4 h-4 mr-2" />
+                Added {new Date(selectedBookmark.createdAt).toLocaleDateString()}
+              </div>
+              {selectedBookmark.collectionId && collections.find(c => c.id === selectedBookmark.collectionId) && (
                 <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
-                  <Calendar className="w-4 h-4 mr-2" />
-                  Added {new Date(selectedBookmark.createdAt).toLocaleDateString()}
+                  <Book className="w-4 h-4 mr-2" />
+                  {collections.find(c => c.id === selectedBookmark.collectionId)?.name}
                 </div>
-                {selectedBookmark.collectionId && (
-                  <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
-                    <Book className="w-4 h-4 mr-2" />
-                    {collections.find(c => c.id === selectedBookmark.collectionId)?.name || 'Unknown Collection'}
-                  </div>
-                )}
-             </div>
+              )}
+            </div>
 
-             {selectedBookmark.tags.length > 0 && (
-               <div>
-                 <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Tags</h4>
-                 <div className="flex flex-wrap gap-2">
-                   {selectedBookmark.tags.map(tag => (
-                     <span key={tag} className="px-2.5 py-1 text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-full border border-gray-200 dark:border-gray-600">
-                       #{tag}
-                     </span>
-                   ))}
-                 </div>
-               </div>
-             )}
+            {selectedBookmark.tags.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Tags</h4>
+                <div className="flex flex-wrap gap-2">
+                  {selectedBookmark.tags.map(tag => (
+                    <span key={tag} className="px-2.5 py-1 text-xs font-medium bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-full border border-gray-200 dark:border-gray-600">
+                      #{tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Modal>
@@ -370,49 +567,84 @@ const Dashboard: React.FC = () => {
       >
         <div className="space-y-4">
           <Input
-             label="Title"
-             value={editForm.title}
-             onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+            label="Title"
+            value={editForm.title}
+            onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
           />
           <Input
-             label="URL"
-             value={editForm.url}
-             onChange={(e) => setEditForm({ ...editForm, url: e.target.value })}
+            label="URL"
+            value={editForm.url}
+            onChange={(e) => setEditForm({ ...editForm, url: e.target.value })}
           />
           <div className="space-y-1">
-             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Description</label>
-             <textarea
-               className="block w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent transition-colors duration-200 min-h-[80px]"
-               value={editForm.description}
-               onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-             />
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Description</label>
+            <textarea
+              className="block w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent transition-colors duration-200 min-h-[80px]"
+              value={editForm.description}
+              onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+            />
           </div>
           <div className="space-y-1">
-             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Collection</label>
-             <select
-               className="block w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent transition-colors"
-               value={editForm.collectionId}
-               onChange={(e) => setEditForm({ ...editForm, collectionId: e.target.value })}
-             >
-               <option value="">Unorganized</option>
-               {collections.map(c => (
-                 <option key={c.id} value={c.id}>{c.name}</option>
-               ))}
-             </select>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Collection</label>
+            {showNewCollectionInput ? (
+              <div className="flex gap-2">
+                <Input
+                  value={newCollectionName}
+                  onChange={(e) => setNewCollectionName(e.target.value)}
+                  placeholder="New collection name"
+                  className="flex-1"
+                />
+                <Button
+                  onClick={handleCreateNewCollection}
+                  isLoading={isCreatingCollection}
+                  size="sm"
+                >
+                  Create
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowNewCollectionInput(false)}
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <select
+                  className="flex-1 block px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent transition-colors"
+                  value={editForm.collectionId}
+                  onChange={(e) => setEditForm({ ...editForm, collectionId: e.target.value })}
+                >
+                  <option value="">Unorganized</option>
+                  {collections.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowNewCollectionInput(true)}
+                  leftIcon={<Plus className="w-4 h-4" />}
+                >
+                  New
+                </Button>
+              </div>
+            )}
           </div>
           <div className="space-y-1">
-             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Notes</label>
-             <textarea
-               className="block w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent transition-colors duration-200 min-h-[60px]"
-               value={editForm.notes}
-               onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-               placeholder="Personal notes..."
-             />
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Notes</label>
+            <textarea
+              className="block w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent transition-colors duration-200 min-h-[60px]"
+              value={editForm.notes}
+              onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+              placeholder="Personal notes..."
+            />
           </div>
           <Input
-             label="Tags (comma separated)"
-             value={editForm.tags}
-             onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })}
+            label="Tags (comma separated)"
+            value={editForm.tags}
+            onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })}
           />
         </div>
       </Modal>
@@ -433,7 +665,39 @@ const Dashboard: React.FC = () => {
           Are you sure you want to delete <strong>{selectedBookmark?.title}</strong>? This action cannot be undone.
         </div>
       </Modal>
-    </div>
+
+      {/* Batch Move Modal */}
+      <Modal
+        isOpen={isBatchMoveModalOpen}
+        onClose={() => setIsBatchMoveModalOpen(false)}
+        title="Move Bookmarks"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setIsBatchMoveModalOpen(false)}>Cancel</Button>
+            <Button onClick={handleBatchMove} isLoading={isSaving} disabled={!batchMoveCollectionId}>
+              Move {selectedIds.size} Bookmarks
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Select a collection to move {selectedIds.size} bookmark{selectedIds.size > 1 ? 's' : ''} to:
+          </p>
+          <select
+            className="block w-full px-3 py-2 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-accent-500 focus:border-transparent transition-colors"
+            value={batchMoveCollectionId}
+            onChange={(e) => setBatchMoveCollectionId(e.target.value)}
+          >
+            <option value="">Select a collection...</option>
+            <option value="">Unorganized (Remove from collection)</option>
+            {collections.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+      </Modal>
+    </motion.div>
   );
 };
 

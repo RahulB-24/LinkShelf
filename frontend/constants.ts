@@ -1,9 +1,9 @@
 import { User, Collection, Tag, Bookmark } from './types';
 
-export const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3000/api';
+export const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:3001/api';
 
-// Toggle this to false to attempt real API connections
-export const USE_MOCK_DATA = true;
+// Toggle this to false to use real API connections
+export const USE_MOCK_DATA = false;
 
 export const ROUTES = {
   LOGIN: '/login',
