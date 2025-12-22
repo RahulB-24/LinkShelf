@@ -2,6 +2,8 @@
 
 A full-stack bookmark management application for organizing web resources, built with React, Node.js, and PostgreSQL.
 
+<img width="3199" height="1832" alt="Image" src="https://github.com/user-attachments/assets/745bebbc-3a24-425e-9830-0fec4e7450ca" />
+<img width="3199" height="1833" alt="Image" src="https://github.com/user-attachments/assets/dd7507bb-ba5a-4b4a-96c7-ec7a108ef75d" />
 ## Features
 
 ### Core Functionality
