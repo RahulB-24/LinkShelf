@@ -6,7 +6,7 @@ The website can be accessed here:
 
 https://linkshelf-delta.vercel.app
 
-<img width="3199" height="1833" alt="Image" src="https://github.com/user-attachments/assets/dd7507bb-ba5a-4b4a-96c7-ec7a108ef75d" />
+<img width="3199" height="1834" alt="Image" src="https://github.com/user-attachments/assets/5d217ee2-a128-407c-a120-e4ae45e98a45" />
 <img width="3199" height="1832" alt="Image" src="https://github.com/user-attachments/assets/745bebbc-3a24-425e-9830-0fec4e7450ca" />
 
 ## Features
