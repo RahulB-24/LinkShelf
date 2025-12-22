@@ -16,6 +16,11 @@ const tagRoutes = require('./routes/tags');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Trust proxy for Render/production (needed for rate limiting behind reverse proxy)
+if (process.env.NODE_ENV === 'production') {
+    app.set('trust proxy', 1);
+}
+
 // ============================================================
 // MIDDLEWARE
 // ============================================================
